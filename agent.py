@@ -16,7 +16,7 @@ if not api_key:
     exit(1)
 print("Anthropic API ключ найден")
 
-exchange = ccxt.binance()
+exchange = ccxt.kraken()
 llm = ChatAnthropic(model="claude-sonnet-4-6", temperature=0)
 
 def get_market_data():
