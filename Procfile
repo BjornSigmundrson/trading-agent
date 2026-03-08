@@ -1,2 +1,2 @@
-web: node server.js
+web: python server.py
 worker: python agent.py
