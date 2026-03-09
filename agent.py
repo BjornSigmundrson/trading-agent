@@ -101,13 +101,15 @@ def save_signal(symbol, signal):
             conn = psycopg2.connect(db_url)
             cur = conn.cursor()
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS signals (
-                    id SERIAL PRIMARY KEY,
-                    symbol VARCHAR(20),
-                    data JSONB,
-                    created_at TIMESTAMP DEFAULT NOW()
-                )
-            """)
+    CREATE TABLE IF NOT EXISTS signals (
+        id SERIAL PRIMARY KEY,
+        data JSONB,
+        created_at TIMESTAMP DEFAULT NOW()
+    )
+""")
+cur.execute("""
+    ALTER TABLE signals ADD COLUMN IF NOT EXISTS symbol VARCHAR(20)
+""")
             cur.execute("INSERT INTO signals (symbol, data) VALUES (%s, %s)",
                        [symbol, json.dumps(signal)])
             conn.commit()
