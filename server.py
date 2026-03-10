@@ -9,10 +9,6 @@ from dotenv import load_dotenv
 
 load_dotenv(override=False)
 
-import threading
-import subprocess
-import sys
-
 def run_agent():
     subprocess.run([sys.executable, "agent.py"])
 
@@ -30,8 +26,9 @@ ASSET = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
 
 if not PAY_TO:
-    print("ОШИБКА: RECEIVING_WALLET не задан")
+    print("ERROR: RECEIVING_WALLET not set")
     exit(1)
+
 
 def verify_payment(payment_header, resource):
     try:
@@ -61,8 +58,9 @@ def verify_payment(payment_header, resource):
             result = json.loads(resp.read().decode())
             return result.get("isValid") == True
     except Exception as e:
-        print("Ошибка верификации:", e)
+        print("Verify error:", e)
         return False
+
 
 def payment_required_response(resource, symbol):
     return jsonify({
@@ -73,7 +71,7 @@ def payment_required_response(resource, symbol):
             "network": NETWORK,
             "maxAmountRequired": str(int(float(PRICE) * 1000000)),
             "resource": resource,
-            "description": "AI Trading Signal - " + symbol + " RSI + MACD + Claude Analysis",
+            "description": "AI Trading Signal - " + symbol + " RSI + MACD + Bollinger + ATR + Claude Analysis",
             "mimeType": "application/json",
             "payTo": PAY_TO,
             "maxTimeoutSeconds": 300,
@@ -81,6 +79,7 @@ def payment_required_response(resource, symbol):
             "extra": {"name": "USDC", "version": "2"}
         }]
     }), 402
+
 
 def read_signal(symbol):
     key = symbol.replace("/", "_")
@@ -97,7 +96,7 @@ def read_signal(symbol):
             if row:
                 return row[0]
     except Exception as e:
-        print("БД ошибка:", e)
+        print("DB error:", e)
     try:
         with open("signal_" + key + ".json", "r", encoding="utf-8") as f:
             return json.load(f)
@@ -111,6 +110,68 @@ def read_signal(symbol):
             pass
     return None
 
+
+@app.route("/.well-known/agent.json")
+def agent_card():
+    return jsonify({
+        "name": "AI Trading Signal Bot",
+        "description": "BTC, ETH, SOL trading signals powered by Claude AI. RSI + MACD + EMA + Bollinger + ATR analysis. Updated every hour at :00.",
+        "url": PUBLIC_URL,
+        "version": "1.0.0",
+        "capabilities": {
+            "payments": ["x402"],
+            "networks": ["base-mainnet"],
+            "assets": ["USDC"]
+        },
+        "endpoints": [
+            {
+                "path": "/signal/BTC",
+                "method": "GET",
+                "description": "BTC/USDT trading signal",
+                "price_usd": 0.50,
+                "currency": "USDC",
+                "network": "base-mainnet"
+            },
+            {
+                "path": "/signal/ETH",
+                "method": "GET",
+                "description": "ETH/USDT trading signal",
+                "price_usd": 0.50,
+                "currency": "USDC",
+                "network": "base-mainnet"
+            },
+            {
+                "path": "/signal/SOL",
+                "method": "GET",
+                "description": "SOL/USDT trading signal",
+                "price_usd": 0.50,
+                "currency": "USDC",
+                "network": "base-mainnet"
+            },
+            {
+                "path": "/status/BTC",
+                "method": "GET",
+                "description": "Free BTC status",
+                "price_usd": 0
+            },
+            {
+                "path": "/status/ETH",
+                "method": "GET",
+                "description": "Free ETH status",
+                "price_usd": 0
+            },
+            {
+                "path": "/status/SOL",
+                "method": "GET",
+                "description": "Free SOL status",
+                "price_usd": 0
+            }
+        ],
+        "contact": "darex20003@gmail.com",
+        "x402_facilitator": "https://x402.org/facilitator"
+    })
+
+
 @app.route("/")
 def index():
     return jsonify({
@@ -120,11 +181,13 @@ def index():
         "network": NETWORK,
         "wallet": PAY_TO,
         "pairs": SYMBOLS,
+        "agent_card": PUBLIC_URL + "/.well-known/agent.json",
         "endpoints": {
-            "free": ["GET /status", "GET /status/BTC", "GET /status/ETH", "GET /status/SOL"],
-            "paid": ["GET /signal", "GET /signal/BTC", "GET /signal/ETH", "GET /signal/SOL"]
+            "free": ["GET /status/BTC", "GET /status/ETH", "GET /status/SOL"],
+            "paid": ["GET /signal/BTC", "GET /signal/ETH", "GET /signal/SOL"]
         }
     })
+
 
 @app.route("/status")
 @app.route("/status/<coin>")
@@ -139,9 +202,11 @@ def status(coin="BTC"):
             "symbol": data.get("symbol"),
             "price": data.get("price"),
             "action": data.get("action"),
+            "confidence": data.get("confidence"),
             "updated": data.get("timestamp")
         })
-    return jsonify({"status": "pending", "message": "Агент ещё не запустился"})
+    return jsonify({"status": "pending", "message": "Agent not started yet"})
+
 
 @app.route("/signal")
 @app.route("/signal/<coin>")
@@ -160,12 +225,14 @@ def signal(coin="BTC"):
         return jsonify({"status": "success", "paid": "$" + PRICE + " USDC", "signal": data})
     return jsonify({"error": "Signal not ready"}), 503
 
+
 if __name__ == "__main__":
     print("=" * 50)
-    print("x402 Сервер запущен!")
+    print("x402 Server started!")
     print("URL: " + PUBLIC_URL)
-    print("Цена: $" + PRICE + " USDC")
-    print("Кошелёк: " + PAY_TO)
-    print("Пары: " + ", ".join(SYMBOLS))
+    print("Price: $" + PRICE + " USDC")
+    print("Wallet: " + PAY_TO)
+    print("Pairs: " + ", ".join(SYMBOLS))
+    print("Agent card: " + PUBLIC_URL + "/.well-known/agent.json")
     print("=" * 50)
     app.run(host="0.0.0.0", port=PORT)
