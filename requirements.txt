@@ -5,3 +5,4 @@ ccxt
 python-dotenv
 flask
 psycopg2-binary
+mcp
