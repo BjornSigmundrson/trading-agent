@@ -65,8 +65,7 @@ STATS_HTML = """<!DOCTYPE html>
   .action.SELL { background: #330011; color: #ff4466; border: 1px solid #ff4466; }
   .action.HOLD { background: #1a2033; color: #ffcc00; border: 1px solid #ffcc00; }
   .signal-card .meta { font-size: 12px; color: #8899aa; margin-top: 8px; }
-  .signal-card .reason { font-size: 12px; color: #aabbcc; margin-top: 8px; line-height: 1.5;
-    max-height: 60px; overflow: hidden; }
+  .signal-card .reason { font-size: 12px; color: #aabbcc; margin-top: 8px; line-height: 1.5; }
   .signal-card .conf { font-size: 13px; color: #ccc; margin-top: 6px; }
   .conf-bar { background: #1e3a5f; border-radius: 4px; height: 6px; margin-top: 4px; }
   .conf-fill { height: 6px; border-radius: 4px; background: linear-gradient(90deg, #4da6ff, #00cc88); }
