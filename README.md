@@ -62,8 +62,8 @@ curl -H "X-Payment: <payment>" \
 | Platform | Link |
 |----------|------|
 | thirdweb Nexus | `https://vwb011k7.nx.link/signal/BTC` |
-| RelAI | relai.fi |
-| Agoragentic | agoragentic.com |
+| RelAI Market | https://relai.fi/market/1773083048448 |
+| RelAI API | `https://api.relai.fi/relay/1773083048448/signal/BTC` |
 
 ## Tech Stack
 
