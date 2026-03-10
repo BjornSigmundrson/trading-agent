@@ -128,7 +128,7 @@ def agent_card():
                 "path": "/signal/BTC",
                 "method": "GET",
                 "description": "BTC/USDT trading signal",
-                "price_usd": 0.50,
+                "price_usd": float(PRICE),
                 "currency": "USDC",
                 "network": "base-mainnet"
             },
@@ -136,7 +136,7 @@ def agent_card():
                 "path": "/signal/ETH",
                 "method": "GET",
                 "description": "ETH/USDT trading signal",
-                "price_usd": 0.50,
+                "price_usd": float(PRICE),
                 "currency": "USDC",
                 "network": "base-mainnet"
             },
@@ -144,7 +144,7 @@ def agent_card():
                 "path": "/signal/SOL",
                 "method": "GET",
                 "description": "SOL/USDT trading signal",
-                "price_usd": 0.50,
+                "price_usd": float(PRICE),
                 "currency": "USDC",
                 "network": "base-mainnet"
             },
