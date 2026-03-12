@@ -241,6 +241,7 @@ STATS_HTML = """<!DOCTYPE html>
     <div class="card"><div class="label">HOLD Signals</div><div class="value yellow" id="hold-count">—</div></div>
     <div class="card"><div class="label">Price per Signal</div><div class="value blue">$0.10 USDC</div></div>
     <div class="card"><div class="label">Accuracy 24h</div><div class="value purple" id="acc-24h">—</div></div>
+    <div class="card"><div class="label">Fear & Greed</div><div class="value" id="fg-card" style="font-size:20px">—</div><div id="fg-label" style="font-size:11px;color:#8899aa;margin-top:2px"></div></div>
   </div>
 
   <!-- ACCURACY SECTION -->
@@ -447,6 +448,49 @@ function renderResultsTable() {
   }).join("");
 }
 
+function fgColor(v) {
+  if (v === null || v === undefined) return "#8899aa";
+  if (v <= 25) return "#ff4466";
+  if (v <= 45) return "#ff8844";
+  if (v <= 55) return "#ffcc00";
+  if (v <= 75) return "#88ddaa";
+  return "#00cc88";
+}
+
+function renderFGWidget(fg) {
+  if (!fg) return "";
+  const col = fgColor(fg.value);
+  const dir = fg.change > 0 ? "↑" : fg.change < 0 ? "↓" : "→";
+  return '<div style="margin-top:8px;padding:6px 10px;background:#0a0e1a;border-radius:8px;border:1px solid #1e3a5f;">' +
+    '<span style="font-size:11px;color:#8899aa">😨 Fear & Greed: </span>' +
+    '<span style="font-weight:bold;color:' + col + '">' + fg.value + '/100 — ' + fg.label + '</span>' +
+    '<span style="font-size:11px;color:#556677"> ' + dir + Math.abs(fg.change) + ' vs yesterday</span>' +
+  '</div>';
+}
+
+function renderLiqsWidget(liqs) {
+  if (!liqs || (!liqs.long_liqs_24h && !liqs.open_interest_usd)) return "";
+  let parts = [];
+  if (liqs.long_liqs_24h !== undefined) {
+    const ratio = liqs.liq_ratio || 0;
+    const signal = ratio > 1.5 ? "🔴 bears winning" : ratio < 0.67 ? "🟢 bulls winning" : "⚪ balanced";
+    parts.push("Liqs 24h: L $" + liqs.long_liqs_24h + "M / S $" + liqs.short_liqs_24h + "M " + signal);
+  }
+  if (liqs.open_interest_usd !== undefined) {
+    const oiCol = liqs.oi_change_pct > 5 ? "#00cc88" : liqs.oi_change_pct < -5 ? "#ff4466" : "#ffcc00";
+    parts.push("OI: $" + liqs.open_interest_usd + "B <span style=\"color:" + oiCol + "\">" + (liqs.oi_change_pct > 0 ? "+" : "") + liqs.oi_change_pct + "%</span>");
+  }
+  return '<div style="margin-top:6px;padding:6px 10px;background:#0a0e1a;border-radius:8px;border:1px solid #1e3a5f;font-size:12px;color:#aabbcc">' +
+    '💧 ' + parts.join(" · ") + '</div>';
+}
+
+function renderWhalesWidget(whales) {
+  if (!whales || !whales.length) return "";
+  return '<div style="margin-top:6px;padding:6px 10px;background:#0a0e1a;border-radius:8px;border:1px solid #1e3a5f;">' +
+    whales.slice(0,2).map(w => '<div style="font-size:11px;color:#cc88ff">🐋 ' + w + '</div>').join("") +
+  '</div>';
+}
+
 async function loadSignals() {
   const results = await Promise.all(
     COINS.map(c => fetch(API + "/status/" + c).then(r => r.json()).catch(() => null))
@@ -462,6 +506,16 @@ function renderSummary() {
   document.getElementById("buy-count").textContent = allSignals.filter(s => s.action === "BUY").length;
   document.getElementById("sell-count").textContent = allSignals.filter(s => s.action === "SELL").length;
   document.getElementById("hold-count").textContent = allSignals.filter(s => s.action === "HOLD").length;
+  // Fear & Greed from first signal that has it
+  const fgSig = allSignals.find(s => s.fear_greed);
+  if (fgSig && fgSig.fear_greed) {
+    const fg = fgSig.fear_greed;
+    const col = fgColor(fg.value);
+    const el = document.getElementById("fg-card");
+    el.textContent = fg.value + "/100";
+    el.style.color = col;
+    document.getElementById("fg-label").textContent = fg.label;
+  }
 }
 
 function renderCards() {
@@ -486,6 +540,9 @@ function renderCards() {
         (tf1d.trend ? '<span class="tf-badge ' + tf1d.trend + '">1D: ' + tf1d.trend + '</span>' : '') +
       '</div>' +
       (news.length ? '<div class="news-item" style="margin-top:8px">📰 ' + news[0] + '</div>' : '') +
+      renderFGWidget(s.fear_greed) +
+      renderLiqsWidget(s.liquidations) +
+      renderWhalesWidget(s.whale_alerts) +
       '<div class="reason">' + (s.reason || "") + '</div>' +
       '<div class="updated">Updated: ' + (s.updated || s.timestamp || "—") + '</div>' +
     '</div>';

@@ -299,6 +299,112 @@ def fetch_news(coin):
     return headlines[:8]
 
 
+def fetch_fear_greed():
+    """Fetch Fear & Greed Index from alternative.me — free, no key needed."""
+    try:
+        req = urllib.request.Request(
+            "https://api.alternative.me/fng/?limit=2",
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode())
+        today = data["data"][0]
+        yesterday = data["data"][1]
+        value = int(today["value"])
+        label = today["value_classification"]
+        change = value - int(yesterday["value"])
+        direction = "↑" if change > 0 else "↓" if change < 0 else "→"
+        print("Fear&Greed: " + str(value) + " (" + label + ") " + direction + str(abs(change)))
+        return {
+            "value": value,
+            "label": label,
+            "change": change,
+            "direction": direction
+        }
+    except Exception as e:
+        print("Fear&Greed error: " + str(e))
+        return None
+
+
+def fetch_liquidations(symbol):
+    """Fetch liquidation levels from Coinglass — free public endpoint."""
+    coin = symbol.split("/")[0]
+    result = {}
+    try:
+        # Long/short liquidation data
+        url = "https://open-api.coinglass.com/public/v2/liquidation_ex?symbol=" + coin + "&interval=h1"
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json"
+        })
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode())
+        if data.get("success") and data.get("data"):
+            d = data["data"]
+            total_long = sum(float(x.get("longLiquidationUsd", 0)) for x in d[-24:])
+            total_short = sum(float(x.get("shortLiquidationUsd", 0)) for x in d[-24:])
+            result["long_liqs_24h"] = round(total_long / 1e6, 2)
+            result["short_liqs_24h"] = round(total_short / 1e6, 2)
+            result["liq_ratio"] = round(total_long / total_short, 2) if total_short > 0 else 0
+            print(coin + " liqs 24h: long=$" + str(result["long_liqs_24h"]) + "M short=$" + str(result["short_liqs_24h"]) + "M")
+    except Exception as e:
+        print("Liquidation error for " + coin + ": " + str(e))
+
+    try:
+        # Open Interest
+        url2 = "https://open-api.coinglass.com/public/v2/open_interest?symbol=" + coin + "&interval=h4"
+        req2 = urllib.request.Request(url2, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json"
+        })
+        with urllib.request.urlopen(req2, timeout=8) as resp2:
+            data2 = json.loads(resp2.read().decode())
+        if data2.get("success") and data2.get("data"):
+            d2 = data2["data"]
+            if len(d2) >= 2:
+                oi_now = float(d2[-1].get("openInterestUsd", 0))
+                oi_prev = float(d2[-5].get("openInterestUsd", 0)) if len(d2) >= 5 else oi_now
+                oi_change = round((oi_now - oi_prev) / oi_prev * 100, 2) if oi_prev > 0 else 0
+                result["open_interest_usd"] = round(oi_now / 1e9, 2)
+                result["oi_change_pct"] = oi_change
+                print(coin + " OI: $" + str(result["open_interest_usd"]) + "B change=" + str(oi_change) + "%")
+    except Exception as e:
+        print("OI error for " + coin + ": " + str(e))
+
+    return result
+
+
+def fetch_whale_alerts(coin):
+    """Parse Whale Alert RSS for large transfers related to this coin."""
+    coin_name = coin.split("/")[0].lower()
+    name_map = {
+        "btc": "bitcoin", "eth": "ethereum", "sol": "solana",
+        "avax": "avalanche", "link": "chainlink", "doge": "dogecoin", "xrp": "ripple"
+    }
+    keywords = [coin_name, name_map.get(coin_name, coin_name)]
+    alerts = []
+    try:
+        req = urllib.request.Request(
+            "https://whale-alert.io/rss",
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            content = resp.read()
+        root = ET.fromstring(content)
+        for item in root.iter("item"):
+            title_el = item.find("title")
+            if title_el is not None and title_el.text:
+                title = title_el.text.strip()
+                if any(kw in title.lower() for kw in keywords):
+                    alerts.append(title)
+            if len(alerts) >= 5:
+                break
+    except Exception as e:
+        print("Whale alert error: " + str(e))
+    return alerts[:3]
+
+
+
 def analyze_timeframe(df):
     rsi = float(ta.momentum.RSIIndicator(df["close"], window=14).rsi().iloc[-1])
     stoch_rsi = ta.momentum.StochRSIIndicator(df["close"], window=14)
@@ -435,13 +541,69 @@ def run_cycle(symbol):
     except Exception as e:
         print("News error: " + str(e))
 
+    fear_greed = None
+    try:
+        fear_greed = fetch_fear_greed()
+    except Exception as e:
+        print("FG error: " + str(e))
+
+    liqs = {}
+    try:
+        liqs = fetch_liquidations(symbol)
+    except Exception as e:
+        print("Liqs error: " + str(e))
+
+    whales = []
+    try:
+        whales = fetch_whale_alerts(symbol)
+        if whales:
+            print("Whale alerts: " + str(len(whales)))
+    except Exception as e:
+        print("Whale error: " + str(e))
+
     news_block = ""
     if news:
         news_block = "\nRECENT NEWS:\n" + "\n".join("- " + h for h in news) + "\n"
 
+    fg_block = ""
+    if fear_greed:
+        fg_block = ("\nMARKET SENTIMENT (Fear & Greed Index):\n"
+            + "  Value: " + str(fear_greed["value"]) + "/100 — " + fear_greed["label"]
+            + " (change: " + fear_greed["direction"] + str(abs(fear_greed["change"])) + " vs yesterday)\n"
+            + "  Interpretation: <25=Extreme Fear, 25-45=Fear, 45-55=Neutral, 55-75=Greed, >75=Extreme Greed\n")
+
+    liqs_block = ""
+    if liqs:
+        parts = []
+        if "long_liqs_24h" in liqs:
+            parts.append("  Long liquidations 24h: $" + str(liqs["long_liqs_24h"]) + "M")
+            parts.append("  Short liquidations 24h: $" + str(liqs["short_liqs_24h"]) + "M")
+            ratio = liqs.get("liq_ratio", 0)
+            if ratio > 1.5:
+                parts.append("  → More LONGS liquidated = bearish pressure")
+            elif ratio < 0.67:
+                parts.append("  → More SHORTS liquidated = bullish pressure")
+        if "open_interest_usd" in liqs:
+            oi_change = liqs.get("oi_change_pct", 0)
+            parts.append("  Open Interest: $" + str(liqs["open_interest_usd"]) + "B (change: " + str(oi_change) + "% last 4 periods)")
+            if oi_change > 5:
+                parts.append("  → Rising OI = new money entering, trend strengthening")
+            elif oi_change < -5:
+                parts.append("  → Falling OI = positions closing, possible reversal")
+        if parts:
+            liqs_block = "\nLIQUIDATIONS & OPEN INTEREST:\n" + "\n".join(parts) + "\n"
+
+    whale_block = ""
+    if whales:
+        whale_block = ("\nWHALE ACTIVITY:\n"
+            + "\n".join("- " + w for w in whales) + "\n"
+            + "  Large transfers TO exchange = possible selling pressure\n"
+            + "  Large transfers FROM exchange = possible accumulation\n")
+
     lines = [
-        "You are a professional crypto trader. Analyze ALL timeframes and news.",
+        "You are a professional crypto trader. Analyze ALL data: timeframes, sentiment, liquidations, whale activity.",
         "Use multi-timeframe confluence — 4h/1d confirm direction, 1h gives entry.",
+        "Weight the data: technicals 50%, liquidation/OI 25%, sentiment+news+whales 25%.",
         "",
         "SYMBOL: " + market["symbol"],
         "PRICE: $" + str(market["price"]),
@@ -451,6 +613,9 @@ def run_cycle(symbol):
         tf_summary(market["tf_4h"], "4H"),
         "",
         tf_summary(market["tf_1d"], "1D"),
+        fg_block,
+        liqs_block,
+        whale_block,
         news_block,
         "Reply ONLY with a raw JSON object. NO markdown, NO code fences, NO explanation. Just the JSON:",
         '{"action":"HOLD","confidence":0.7,"stop_loss":0,"take_profit":0,"reason":"reason in Russian"}',
@@ -460,19 +625,27 @@ def run_cycle(symbol):
 
     response = llm.invoke([{"role": "user", "content": prompt}])
     try:
-        raw = response.content.strip()
-        # Strip markdown code fences if present
-        if "```" in raw:
-            raw = raw.split("```")[-2] if raw.count("```") >= 2 else raw
-            raw = raw.replace("json", "", 1).strip()
-        # Find JSON object in response
+        # Get raw text from response - handle both string and AIMessage
+        raw = response.content if isinstance(response.content, str) else str(response.content)
+        raw = raw.strip()
+        print("RAW RESPONSE: " + raw[:300])
+        # Save raw to file for debugging
+        with open("last_raw_response.txt", "w", encoding="utf-8") as _f:
+            _f.write(raw)
+        # Strip markdown code fences
+        import re
+        raw = re.sub(r"```(?:json)?\s*", "", raw).strip()
+        raw = re.sub(r"```\s*$", "", raw).strip()
+        # Find JSON object
         start = raw.find("{")
         end = raw.rfind("}") + 1
         if start >= 0 and end > start:
             raw = raw[start:end]
         decision = json.loads(raw)
+        print("Parse OK: action=" + str(decision.get("action")) + " conf=" + str(decision.get("confidence")))
     except Exception as e:
-        print("Parse error: " + str(e) + " | raw: " + str(response.content[:200]))
+        print("PARSE ERROR: " + str(e))
+        print("RAW WAS: " + repr(raw[:500] if "raw" in dir() else "N/A"))
         decision = {"action": "HOLD", "confidence": 0.0, "stop_loss": 0, "take_profit": 0, "reason": "Parse error: " + str(e)}
 
     result = {
@@ -482,6 +655,9 @@ def run_cycle(symbol):
         "tf_4h": market["tf_4h"],
         "tf_1d": market["tf_1d"],
         "news": news,
+        "fear_greed": fear_greed,
+        "liquidations": liqs,
+        "whale_alerts": whales,
     }
     result.update(decision)
     result["timestamp"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
