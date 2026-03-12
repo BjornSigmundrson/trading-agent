@@ -459,36 +459,46 @@ function fgColor(v) {
 
 function renderFGWidget(fg) {
   if (!fg) return "";
-  const col = fgColor(fg.value);
-  const dir = fg.change > 0 ? "↑" : fg.change < 0 ? "↓" : "→";
-  return '<div style="margin-top:8px;padding:6px 10px;background:#0a0e1a;border-radius:8px;border:1px solid #1e3a5f;">' +
-    '<span style="font-size:11px;color:#8899aa">😨 Fear & Greed: </span>' +
-    '<span style="font-weight:bold;color:' + col + '">' + fg.value + '/100 — ' + fg.label + '</span>' +
-    '<span style="font-size:11px;color:#556677"> ' + dir + Math.abs(fg.change) + ' vs yesterday</span>' +
-  '</div>';
+  var col = fgColor(fg.value);
+  var dir = fg.change > 0 ? "↑" : fg.change < 0 ? "↓" : "→";
+  var html = '<div style="margin-top:8px;padding:6px 10px;background:#0a0e1a;border-radius:8px;border:1px solid #1e3a5f;">';
+  html += '<span style="font-size:11px;color:#8899aa">😨 Fear & Greed: </span>';
+  html += '<span style="font-weight:bold;color:' + col + '">' + fg.value + '/100 — ' + fg.label + '</span>';
+  html += '<span style="font-size:11px;color:#556677"> ' + dir + Math.abs(fg.change) + ' vs yesterday</span>';
+  html += '</div>';
+  return html;
 }
 
 function renderLiqsWidget(liqs) {
-  if (!liqs || (!liqs.long_liqs_24h && !liqs.open_interest_usd)) return "";
-  let parts = [];
+  if (!liqs) return "";
+  var parts = [];
   if (liqs.long_liqs_24h !== undefined) {
-    const ratio = liqs.liq_ratio || 0;
-    const signal = ratio > 1.5 ? "🔴 bears winning" : ratio < 0.67 ? "🟢 bulls winning" : "⚪ balanced";
-    parts.push("Liqs 24h: L $" + liqs.long_liqs_24h + "M / S $" + liqs.short_liqs_24h + "M " + signal);
+    var ratio = liqs.liq_ratio || 0;
+    var signal = ratio > 1.5 ? "🔴 bears" : ratio < 0.67 ? "🟢 bulls" : "⚪ balanced";
+    parts.push("Liqs: L $" + liqs.long_liqs_24h + "M / S $" + liqs.short_liqs_24h + "M " + signal);
   }
   if (liqs.open_interest_usd !== undefined) {
-    const oiCol = liqs.oi_change_pct > 5 ? "#00cc88" : liqs.oi_change_pct < -5 ? "#ff4466" : "#ffcc00";
-    parts.push("OI: $" + liqs.open_interest_usd + "B <span style=\"color:" + oiCol + "\">" + (liqs.oi_change_pct > 0 ? "+" : "") + liqs.oi_change_pct + "%</span>");
+    var oiSign = liqs.oi_change_pct > 0 ? "+" : "";
+    var oiCol = liqs.oi_change_pct > 5 ? "#00cc88" : liqs.oi_change_pct < -5 ? "#ff4466" : "#ffcc00";
+    parts.push("OI: $" + liqs.open_interest_usd + "B");
+    parts.push("OI chg: " + oiSign + liqs.oi_change_pct + "%");
   }
-  return '<div style="margin-top:6px;padding:6px 10px;background:#0a0e1a;border-radius:8px;border:1px solid #1e3a5f;font-size:12px;color:#aabbcc">' +
-    '💧 ' + parts.join(" · ") + '</div>';
+  if (!parts.length) return "";
+  var html = '<div style="margin-top:6px;padding:6px 10px;background:#0a0e1a;border-radius:8px;border:1px solid #1e3a5f;font-size:12px;color:#aabbcc">';
+  html += '💧 ' + parts.join(' · ');
+  html += '</div>';
+  return html;
 }
 
 function renderWhalesWidget(whales) {
   if (!whales || !whales.length) return "";
-  return '<div style="margin-top:6px;padding:6px 10px;background:#0a0e1a;border-radius:8px;border:1px solid #1e3a5f;">' +
-    whales.slice(0,2).map(w => '<div style="font-size:11px;color:#cc88ff">🐋 ' + w + '</div>').join("") +
-  '</div>';
+  var html = '<div style="margin-top:6px;padding:6px 10px;background:#0a0e1a;border-radius:8px;border:1px solid #1e3a5f;">';
+  var items = whales.slice(0, 2);
+  for (var i = 0; i < items.length; i++) {
+    html += '<div style="font-size:11px;color:#cc88ff">' + items[i] + '</div>';
+  }
+  html += '</div>';
+  return html;
 }
 
 async function loadSignals() {
