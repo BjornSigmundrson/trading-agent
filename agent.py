@@ -383,24 +383,56 @@ def fetch_whale_alerts(coin):
     }
     keywords = [coin_name, name_map.get(coin_name, coin_name)]
     alerts = []
-    try:
-        req = urllib.request.Request(
-            "https://whale-alert.io/rss",
-            headers={"User-Agent": "Mozilla/5.0"}
-        )
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            content = resp.read()
-        root = ET.fromstring(content)
-        for item in root.iter("item"):
-            title_el = item.find("title")
-            if title_el is not None and title_el.text:
-                title = title_el.text.strip()
-                if any(kw in title.lower() for kw in keywords):
-                    alerts.append(title)
-            if len(alerts) >= 5:
-                break
-    except Exception as e:
-        print("Whale alert error: " + str(e))
+    # Try multiple Whale Alert RSS sources
+    whale_urls = [
+        "https://api.whale-alert.io/v1/transactions?api_key=free&min_value=500000&limit=10",
+        "https://feeds.feedburner.com/whale-alert",
+        "https://whale-alert.io/feed",
+    ]
+    for url in whale_urls:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                raw = resp.read()
+            # Try JSON first (whale-alert API)
+            try:
+                data = json.loads(raw.decode())
+                txs = data.get("transactions", [])
+                for tx in txs:
+                    sym = (tx.get("symbol") or "").lower()
+                    if sym in keywords:
+                        amount = tx.get("amount", 0)
+                        usd = tx.get("amount_usd", 0)
+                        from_owner = tx.get("from", {}).get("owner", "unknown")
+                        to_owner = tx.get("to", {}).get("owner", "unknown")
+                        alerts.append(str(int(amount)) + " " + sym.upper() +
+                            " ($" + str(int(usd/1e6)) + "M) " + from_owner + " → " + to_owner)
+                    if len(alerts) >= 3:
+                        break
+                if alerts:
+                    break
+            except Exception:
+                pass
+            # Try RSS/XML
+            try:
+                root = ET.fromstring(raw)
+                for item in root.iter("item"):
+                    title_el = item.find("title")
+                    if title_el is not None and title_el.text:
+                        title = title_el.text.strip()
+                        if any(kw in title.lower() for kw in keywords):
+                            alerts.append(title)
+                    if len(alerts) >= 5:
+                        break
+                if alerts:
+                    break
+            except Exception:
+                pass
+        except Exception as e:
+            print("Whale url error " + url[:40] + ": " + str(e))
+            continue
+    if not alerts:
+        print("Whale alert: no data available")
     return alerts[:3]
 
 
