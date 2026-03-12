@@ -328,49 +328,91 @@ def fetch_fear_greed():
 
 
 def fetch_liquidations(symbol):
-    """Fetch liquidation levels from Coinglass — free public endpoint."""
-    coin = symbol.split("/")[0]
+    """Fetch liquidation data from Hyperliquid — free, no key, no geo-block."""
+    coin = symbol.split("/")[0].upper()
     result = {}
-    try:
-        # Long/short liquidation data
-        url = "https://open-api.coinglass.com/public/v2/liquidation_ex?symbol=" + coin + "&interval=h1"
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json"
-        })
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            data = json.loads(resp.read().decode())
-        if data.get("success") and data.get("data"):
-            d = data["data"]
-            total_long = sum(float(x.get("longLiquidationUsd", 0)) for x in d[-24:])
-            total_short = sum(float(x.get("shortLiquidationUsd", 0)) for x in d[-24:])
-            result["long_liqs_24h"] = round(total_long / 1e6, 2)
-            result["short_liqs_24h"] = round(total_short / 1e6, 2)
-            result["liq_ratio"] = round(total_long / total_short, 2) if total_short > 0 else 0
-            print(coin + " liqs 24h: long=$" + str(result["long_liqs_24h"]) + "M short=$" + str(result["short_liqs_24h"]) + "M")
-    except Exception as e:
-        print("Liquidation error for " + coin + ": " + str(e))
 
     try:
-        # Open Interest
-        url2 = "https://open-api.coinglass.com/public/v2/open_interest?symbol=" + coin + "&interval=h4"
-        req2 = urllib.request.Request(url2, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json"
-        })
-        with urllib.request.urlopen(req2, timeout=8) as resp2:
-            data2 = json.loads(resp2.read().decode())
-        if data2.get("success") and data2.get("data"):
-            d2 = data2["data"]
-            if len(d2) >= 2:
-                oi_now = float(d2[-1].get("openInterestUsd", 0))
-                oi_prev = float(d2[-5].get("openInterestUsd", 0)) if len(d2) >= 5 else oi_now
-                oi_change = round((oi_now - oi_prev) / oi_prev * 100, 2) if oi_prev > 0 else 0
-                result["open_interest_usd"] = round(oi_now / 1e9, 2)
-                result["oi_change_pct"] = oi_change
-                print(coin + " OI: $" + str(result["open_interest_usd"]) + "B change=" + str(oi_change) + "%")
+        # Get liquidation levels (open interest by price level)
+        body = json.dumps({"type": "clearinghouseState", "user": "0x0000000000000000000000000000000000000000"}).encode()
+        # Use metaAndAssetCtxs for funding + OI data
+        body2 = json.dumps({"type": "metaAndAssetCtxs"}).encode()
+        req = urllib.request.Request(
+            "https://api.hyperliquid.xyz/info",
+            data=body2,
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+
+        # data[0] = meta (universe list), data[1] = asset contexts
+        if isinstance(data, list) and len(data) >= 2:
+            universe = data[0].get("universe", [])
+            asset_ctxs = data[1]
+
+            # Find our coin index
+            coin_idx = None
+            for i, u in enumerate(universe):
+                if u.get("name") == coin:
+                    coin_idx = i
+                    break
+
+            if coin_idx is not None and coin_idx < len(asset_ctxs):
+                ctx = asset_ctxs[coin_idx]
+                funding = float(ctx.get("funding", 0)) * 100
+                open_interest = float(ctx.get("openInterest", 0))
+                mark_price = float(ctx.get("markPx", 0))
+                oi_usd = open_interest * mark_price
+
+                result["funding_rate"] = round(funding, 4)
+                result["open_interest_usd"] = round(oi_usd / 1e9, 3)
+                result["mark_price"] = round(mark_price, 4)
+
+                # Premium = funding rate signal
+                if funding > 0.01:
+                    result["funding_signal"] = "LONGS_PAYING — перегрев лонгов, риск коррекции"
+                elif funding < -0.005:
+                    result["funding_signal"] = "SHORTS_PAYING — возможен шорт-сквиз"
+                else:
+                    result["funding_signal"] = "NEUTRAL — баланс позиций"
+
+                print(coin + " Hyperliquid: funding=" + str(funding) + "% OI=$" + str(round(oi_usd/1e6, 1)) + "M")
+
     except Exception as e:
-        print("OI error for " + coin + ": " + str(e))
+        print("Hyperliquid metaAndAssetCtxs error for " + coin + ": " + str(e))
+
+    try:
+        # Get recent liquidations
+        body3 = json.dumps({
+            "type": "recentTrades",
+            "coin": coin
+        }).encode()
+        # Actually use funding history for trend
+        body4 = json.dumps({
+            "type": "fundingHistory",
+            "coin": coin,
+            "startTime": int(__import__("time").time() * 1000) - 24 * 3600 * 1000
+        }).encode()
+        req4 = urllib.request.Request(
+            "https://api.hyperliquid.xyz/info",
+            data=body4,
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req4, timeout=10) as resp4:
+            hist = json.loads(resp4.read().decode())
+
+        if hist and len(hist) >= 2:
+            rates = [float(h.get("fundingRate", 0)) * 100 for h in hist[-8:]]
+            avg_rate = sum(rates) / len(rates) if rates else 0
+            trend = "РАСТЁТ" if rates[-1] > rates[0] else "ПАДАЕТ"
+            result["funding_24h_avg"] = round(avg_rate, 4)
+            result["funding_trend"] = trend
+            print(coin + " funding 24h avg=" + str(round(avg_rate, 4)) + "% trend=" + trend)
+
+    except Exception as e:
+        print("Hyperliquid funding history error for " + coin + ": " + str(e))
 
     return result
 
@@ -634,6 +676,12 @@ def run_cycle(symbol):
     liqs_block = ""
     if liqs:
         parts = []
+        if "funding_rate" in liqs:
+            parts.append("  Funding rate: " + str(liqs["funding_rate"]) + "% — " + liqs.get("funding_signal", ""))
+        if "funding_24h_avg" in liqs:
+            parts.append("  Funding 24h avg: " + str(liqs["funding_24h_avg"]) + "% (trend: " + liqs.get("funding_trend", "?") + ")")
+        if "open_interest_usd" in liqs:
+            parts.append("  Open Interest: $" + str(liqs["open_interest_usd"]) + "B (Hyperliquid DEX)")
         if "long_liqs_24h" in liqs:
             parts.append("  Long liquidations 24h: $" + str(liqs["long_liqs_24h"]) + "M")
             parts.append("  Short liquidations 24h: $" + str(liqs["short_liqs_24h"]) + "M")
@@ -642,15 +690,8 @@ def run_cycle(symbol):
                 parts.append("  → More LONGS liquidated = bearish pressure")
             elif ratio < 0.67:
                 parts.append("  → More SHORTS liquidated = bullish pressure")
-        if "open_interest_usd" in liqs:
-            oi_change = liqs.get("oi_change_pct", 0)
-            parts.append("  Open Interest: $" + str(liqs["open_interest_usd"]) + "B (change: " + str(oi_change) + "% last 4 periods)")
-            if oi_change > 5:
-                parts.append("  → Rising OI = new money entering, trend strengthening")
-            elif oi_change < -5:
-                parts.append("  → Falling OI = positions closing, possible reversal")
         if parts:
-            liqs_block = "\nLIQUIDATIONS & OPEN INTEREST:\n" + "\n".join(parts) + "\n"
+            liqs_block = "\nLIQUIDATIONS & OPEN INTEREST (Hyperliquid):\n" + "\n".join(parts) + "\n"
 
     whale_block = ""
     if whales:
