@@ -799,20 +799,20 @@ def get_market_data(symbol):
 # Coin-specific thresholds
 COIN_PROFILES = {
     "BTC": {
-        "rsi_buy_max": 63,    # BTC менее волатилен — строже порог
-        "rsi_sell_min": 67,
-        "stoch_overbought": 82,
-        "vol_warn": 0.4,      # BTC норма — низкий объём
-        "min_signals": 4,     # Требуем больше подтверждений
-        "description": "Blue chip — строгие пороги, нужно больше подтверждений"
-    },
-    "ETH": {
-        "rsi_buy_max": 64,
-        "rsi_sell_min": 66,
+        "rsi_buy_max": 65,
+        "rsi_sell_min": 65,
         "stoch_overbought": 82,
         "vol_warn": 0.4,
-        "min_signals": 4,
-        "description": "Blue chip — строгие пороги"
+        "min_signals": 3,
+        "description": "Blue chip — чёткие пороги RSI"
+    },
+    "ETH": {
+        "rsi_buy_max": 65,
+        "rsi_sell_min": 65,
+        "stoch_overbought": 82,
+        "vol_warn": 0.4,
+        "min_signals": 3,
+        "description": "Blue chip — чёткие пороги RSI"
     },
     "SOL": {
         "rsi_buy_max": 66,
@@ -1141,7 +1141,20 @@ def run_cycle(symbol):
     ]
     prompt = "\n".join(lines)
 
-    response = llm.invoke([{"role": "user", "content": prompt}])
+    # Retry on overload (529)
+    for attempt in range(3):
+        try:
+            response = llm.invoke([{"role": "user", "content": prompt}])
+            break
+        except Exception as e:
+            if "529" in str(e) or "overloaded" in str(e).lower():
+                wait = 30 * (attempt + 1)
+                print("Anthropic overloaded, retry in " + str(wait) + "s...")
+                time.sleep(wait)
+                if attempt == 2:
+                    raise
+            else:
+                raise
     try:
         # Get raw text from response - handle both string and AIMessage
         raw = response.content if isinstance(response.content, str) else str(response.content)
