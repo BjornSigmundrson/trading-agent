@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import threading
 import datetime
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -1046,16 +1047,16 @@ def paper_check_open_trades(conn, current_prices):
 
             pnl_usd = round(size * pnl_pct / 100, 2)
 
-            # Auto-close trades older than 48 hours
+            # Auto-close trades older than 24 hours with no significant movement
             if not exit_reason:
+                import datetime as _dt
                 cur.execute("SELECT opened_at FROM paper_trades WHERE id=%s", (tid,))
                 opened_row = cur.fetchone()
                 if opened_row:
-                    import datetime as _dt
                     age_hours = (_dt.datetime.now(_dt.timezone.utc) - opened_row[0].replace(tzinfo=_dt.timezone.utc)).total_seconds() / 3600
-                    if age_hours > 48:
-                        exit_reason = "TIMEOUT_48H"
-                        print("Paper trade TIMEOUT: " + symbol + " open " + str(round(age_hours,1)) + "h")
+                    if age_hours >= 24:
+                        exit_reason = "TIMEOUT_24H"
+                        print("Paper trade TIMEOUT 24H: " + symbol + " P&L=" + str(round(pnl_pct,2)) + "%")
 
             if exit_reason:
                 cur.execute("""
@@ -1424,6 +1425,36 @@ def wait_until_next_hour():
     time.sleep(wait)
 
 
+def run_paper_checker():
+    """Background thread — checks paper trades every 15 minutes."""
+    print("Paper checker thread started (every 15 min)")
+    while True:
+        try:
+            time.sleep(900)  # 15 minutes
+            conn = get_db()
+            if not conn:
+                continue
+            current_prices = {}
+            for sym in SYMBOLS:
+                try:
+                    coin = sym.split("/")[0]
+                    for ex in EXCHANGES:
+                        try:
+                            ticker = ex.fetch_ticker(sym)
+                            if ticker and ticker.get("last"):
+                                current_prices[coin] = float(ticker["last"])
+                                break
+                        except:
+                            continue
+                except:
+                    pass
+            if current_prices:
+                paper_check_open_trades(conn, current_prices)
+            conn.close()
+        except Exception as e:
+            print("Paper checker error: " + str(e))
+
+
 if __name__ == "__main__":
     print("=" * 50)
     print("Agent v3 — Multi-TF + News + Accuracy Tracking")
@@ -1432,6 +1463,10 @@ if __name__ == "__main__":
     print("=" * 50)
 
     init_db()
+
+    # Start background paper trade checker (every 15 min)
+    checker_thread = threading.Thread(target=run_paper_checker, daemon=True)
+    checker_thread.start()
 
     cycle = 0
     while True:

@@ -459,7 +459,7 @@ async function loadPaper() {
     if (d.closed_trades.length) {
       closedTbody.innerHTML = d.closed_trades.map(t => {
         const pnlCol = t.pnl_usd >= 0 ? "#00cc88" : "#ff4466";
-        const reasonCol = t.exit_reason === "TAKE_PROFIT" ? "#00cc88" : "#ff4466";
+        const reasonCol = t.exit_reason === "TAKE_PROFIT" ? "#00cc88" : t.exit_reason === "TIMEOUT_24H" ? "#ffcc00" : "#ff4466";
         return "<tr style='border-bottom:1px solid #0d1f36'>" +
           "<td style='padding:8px;font-weight:bold'>" + t.symbol.split("/")[0] + "</td>" +
           "<td style='color:" + (t.action==="BUY"?"#00cc88":"#ff4466") + ";text-align:center'>" + t.action + "</td>" +
