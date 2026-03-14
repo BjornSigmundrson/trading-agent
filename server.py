@@ -747,7 +747,6 @@ function renderCards() {
         '<div class="news-item" style="margin-top:6px;font-size:12px;color:#8899aa">📰 ' + n + '</div>'
       ).join('') || '<div class="news-item" style="margin-top:6px;font-size:12px;color:#556677">📰 ' + news[0].replace('[general] ','') + '</div>' : '') +
       renderLiqsWidget(s.liquidations) +
-      renderWhalesWidget(s.whale_alerts) +
       '<div class="reason">' + (s.reason || "") + '</div>' +
       '<div class="updated">Updated: ' + (s.updated || s.timestamp || "—") + '</div>' +
     '</div>';

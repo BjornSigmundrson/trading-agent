@@ -18,22 +18,13 @@ SYMBOLS = [
     "AVAX/USDT", "LINK/USDT", "DOGE/USDT", "XRP/USDT"
 ]
 
-# General RSS feeds — filter by keyword
+# RSS feeds — filter by coin keyword
 NEWS_FEEDS = [
     "https://cointelegraph.com/rss",
     "https://coindesk.com/arc/outboundfeeds/rss/",
     "https://decrypt.co/feed",
     "https://cryptopotato.com/feed/",
     "https://beincrypto.com/feed/",
-]
-
-# Per-coin keyword map — no tag-specific feeds (unreliable)
-COIN_NEWS_FEEDS = {}  # empty — use keyword filter from NEWS_FEEDS
-
-NEWS_FEEDS = [
-    "https://cointelegraph.com/rss",
-    "https://coindesk.com/arc/outboundfeeds/rss/",
-    "https://decrypt.co/feed",
 ]
 
 api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -522,8 +513,17 @@ def fetch_cryptocompare_sentiment(coin_name):
         return None
 
 
+_market_ctx_cache = {"data": None, "ts": 0}
+
 def fetch_market_context():
-    """Fetch S&P500 and Gold from Alpha Vantage — free tier 25 req/day."""
+    """Fetch S&P500 from Alpha Vantage — free tier 25 req/day.
+    Cached for 1 hour to avoid exceeding limits (7 coins x fetch = 7 req/cycle max).
+    """
+    import time as _time
+    global _market_ctx_cache
+    # Return cached if less than 55 minutes old
+    if _market_ctx_cache["data"] and (_time.time() - _market_ctx_cache["ts"]) < 3300:
+        return _market_ctx_cache["data"]
     try:
         key = os.getenv("ALPHA_VANTAGE_KEY", "")
         if not key:
@@ -549,6 +549,8 @@ def fetch_market_context():
         else:
             result["signal"] = "S&P500 нейтрален " + str(spy_change) + "%"
         print("Alpha Vantage SPY: " + str(spy_price) + " (" + str(spy_change) + "%)")
+        _market_ctx_cache["data"] = result
+        _market_ctx_cache["ts"] = _time.time()
         return result
     except Exception as e:
         print("Alpha Vantage error: " + str(e))
@@ -1033,6 +1035,17 @@ def paper_check_open_trades(conn, current_prices):
 
             pnl_usd = round(size * pnl_pct / 100, 2)
 
+            # Auto-close trades older than 48 hours
+            if not exit_reason:
+                cur.execute("SELECT opened_at FROM paper_trades WHERE id=%s", (tid,))
+                opened_row = cur.fetchone()
+                if opened_row:
+                    import datetime as _dt
+                    age_hours = (_dt.datetime.now(_dt.timezone.utc) - opened_row[0].replace(tzinfo=_dt.timezone.utc)).total_seconds() / 3600
+                    if age_hours > 48:
+                        exit_reason = "TIMEOUT_48H"
+                        print("Paper trade TIMEOUT: " + symbol + " open " + str(round(age_hours,1)) + "h")
+
             if exit_reason:
                 cur.execute("""
                     UPDATE paper_trades
@@ -1114,15 +1127,17 @@ def run_cycle(symbol):
     except Exception as e:
         print("Liqs error: " + str(e))
 
+    # Define coin_name once for all subsequent calls
+    coin_name = symbol.split("/")[0].lower()
+
     # CryptoCompare social sentiment
     sentiment = None
     try:
-        coin_name = symbol.split("/")[0].lower()
         sentiment = fetch_cryptocompare_sentiment(coin_name)
     except Exception as e:
         print("Sentiment error: " + str(e))
 
-    # Alpha Vantage market context (S&P500) — fetch once per cycle shared
+    # Alpha Vantage market context (S&P500)
     market_ctx = None
     try:
         market_ctx = fetch_market_context()
@@ -1132,7 +1147,6 @@ def run_cycle(symbol):
     # Messari on-chain metrics
     messari = None
     try:
-        coin_name = symbol.split("/")[0].lower()
         messari = fetch_messari_metrics(coin_name)
     except Exception as e:
         print("Messari error: " + str(e))
@@ -1174,9 +1188,7 @@ def run_cycle(symbol):
 
     # Messari on-chain block
     messari_block = ""
-    messari_data = signal.get("messari") if isinstance(signal, dict) else market.get("messari")
-    if not messari_data:
-        messari_data = messari
+    messari_data = messari  # use directly from fetch
     if messari_data:
         parts = []
         if messari_data.get("tx_volume_24h_usd"):
