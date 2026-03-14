@@ -2,6 +2,8 @@ import os
 import json
 import time
 import threading
+import websocket
+import json as _json_ws
 import datetime
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -55,257 +57,85 @@ def init_exchanges():
     print("Total exchanges: " + str(len(EXCHANGES)))
 
 
+def fetch_ohlcv_hyperliquid(coin, timeframe, limit=200):
+    """Fetch OHLCV candles from Hyperliquid — free, no geo-block."""
+    # Hyperliquid timeframe map
+    tf_map = {
+        "1h": "1h", "4h": "4h", "1d": "1d",
+        "15m": "15m", "5m": "5m", "1m": "1m"
+    }
+    hl_tf = tf_map.get(timeframe, timeframe)
+    try:
+        now_ms = int(time.time() * 1000)
+        # startTime = now - limit * tf_ms
+        tf_ms = {"1m": 60000, "5m": 300000, "15m": 900000,
+                 "1h": 3600000, "4h": 14400000, "1d": 86400000}
+        start_ms = now_ms - limit * tf_ms.get(hl_tf, 3600000)
+
+        body = json.dumps({
+            "type": "candleSnapshot",
+            "req": {
+                "coin": coin,
+                "interval": hl_tf,
+                "startTime": start_ms,
+                "endTime": now_ms
+            }
+        })
+        req = urllib.request.Request(
+            "https://api.hyperliquid.xyz/info",
+            data=body.encode(),
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            candles = json.loads(resp.read().decode())
+
+        if not candles or len(candles) < 10:
+            return None
+
+        # Convert to OHLCV format: [timestamp, open, high, low, close, volume]
+        ohlcv = []
+        for c in candles:
+            ohlcv.append([
+                int(c.get("t", 0)),
+                float(c.get("o", 0)),
+                float(c.get("h", 0)),
+                float(c.get("l", 0)),
+                float(c.get("c", 0)),
+                float(c.get("v", 0))
+            ])
+        return ohlcv
+
+    except Exception as e:
+        print("HL OHLCV error " + coin + " " + timeframe + ": " + str(e))
+        return None
+
+
 def fetch_ohlcv_with_fallback(symbol, timeframe, limit=200):
-    """Try each exchange until one returns data for this symbol+timeframe."""
+    """Fetch OHLCV — Hyperliquid first (free, fast), then CEX fallback."""
+    coin = symbol.split("/")[0].upper()
+
+    # Try Hyperliquid first
+    ohlcv = fetch_ohlcv_hyperliquid(coin, timeframe, limit)
+    if ohlcv and len(ohlcv) >= 50:
+        print("  " + symbol + " " + timeframe + " from hyperliquid")
+        return ohlcv
+
+    # Fallback to CEX exchanges
     errors = []
     for ex in EXCHANGES:
         try:
-            # Check if exchange has this symbol
             if symbol not in ex.markets:
                 continue
-            data = ex.fetch_ohlcv(symbol, timeframe, limit=limit)
-            if data and len(data) > 50:
+            ohlcv = ex.fetch_ohlcv(symbol, timeframe, limit=limit)
+            if ohlcv and len(ohlcv) >= 50:
                 print("  " + symbol + " " + timeframe + " from " + ex.id)
-                return data
+                return ohlcv
         except Exception as e:
             errors.append(ex.id + ": " + str(e))
             continue
-    raise Exception("No exchange has " + symbol + " " + timeframe + " — " + "; ".join(errors))
 
-
-init_exchanges()
-llm = ChatAnthropic(model="claude-sonnet-4-6", temperature=0, max_tokens=800)
-
-
-def get_db():
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        return None
-    return psycopg2.connect(db_url)
-
-
-def init_db():
-    conn = get_db()
-    if not conn:
-        return
-    cur = conn.cursor()
-    # signals table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS signals (
-            id SERIAL PRIMARY KEY,
-            symbol VARCHAR(20),
-            data JSONB,
-            created_at TIMESTAMP DEFAULT NOW()
-        )
-    """)
-    try:
-        cur.execute("ALTER TABLE signals ADD COLUMN IF NOT EXISTS symbol VARCHAR(20)")
-    except Exception:
-        pass
-    # results table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS paper_trades (
-            id SERIAL PRIMARY KEY,
-            symbol VARCHAR(20),
-            action VARCHAR(10),
-            entry_price FLOAT,
-            stop_loss FLOAT,
-            take_profit FLOAT,
-            confidence FLOAT,
-            size_usd FLOAT DEFAULT 100,
-            status VARCHAR(10) DEFAULT 'OPEN',
-            exit_price FLOAT,
-            pnl_usd FLOAT,
-            pnl_pct FLOAT,
-            exit_reason VARCHAR(20),
-            opened_at TIMESTAMP DEFAULT NOW(),
-            closed_at TIMESTAMP
-        )
-    """)
-    conn.commit()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS paper_portfolio (
-            id SERIAL PRIMARY KEY,
-            balance FLOAT DEFAULT 1000,
-            updated_at TIMESTAMP DEFAULT NOW()
-        )
-    """)
-    # Init portfolio with $1000 if empty
-    cur.execute("SELECT COUNT(*) FROM paper_portfolio")
-    if cur.fetchone()[0] == 0:
-        cur.execute("INSERT INTO paper_portfolio (balance) VALUES (1000)")
-    conn.commit()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS signal_results (
-            id SERIAL PRIMARY KEY,
-            signal_id INTEGER REFERENCES signals(id),
-            symbol VARCHAR(20),
-            action VARCHAR(10),
-            price_at_signal FLOAT,
-            price_1h FLOAT,
-            price_4h FLOAT,
-            price_24h FLOAT,
-            price_7d FLOAT,
-            price_30d FLOAT,
-            result_1h VARCHAR(10),
-            result_4h VARCHAR(10),
-            result_24h VARCHAR(10),
-            result_7d VARCHAR(10),
-            result_30d VARCHAR(10),
-            created_at TIMESTAMP DEFAULT NOW(),
-            updated_at TIMESTAMP DEFAULT NOW()
-        )
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
-    print("DB initialized")
-
-
-def get_current_price(symbol):
-    for ex in EXCHANGES:
-        try:
-            if symbol not in ex.markets:
-                continue
-            ticker = ex.fetch_ticker(symbol)
-            price = float(ticker["last"])
-            if price > 0:
-                return price
-        except Exception as e:
-            print("Price error " + ex.id + " for " + symbol + ": " + str(e))
-            continue
-    return None
-
-
-def check_signal_result(action, price_at_signal, price_now):
-    if not price_now or not price_at_signal:
-        return None
-    change_pct = (price_now - price_at_signal) / price_at_signal * 100
-    if action == "BUY":
-        if change_pct > 1.0:
-            return "WIN"
-        elif change_pct < -1.0:
-            return "LOSS"
-        else:
-            return "NEUTRAL"
-    elif action == "SELL":
-        if change_pct < -1.0:
-            return "WIN"
-        elif change_pct > 1.0:
-            return "LOSS"
-        else:
-            return "NEUTRAL"
-    else:  # HOLD
-        if abs(change_pct) < 2.0:
-            return "WIN"
-        else:
-            return "NEUTRAL"
-
-
-def update_signal_results():
-    conn = get_db()
-    if not conn:
-        return
-    try:
-        cur = conn.cursor()
-        now = datetime.datetime.now(datetime.timezone.utc)
-
-        # Get signals that need result updates
-        cur.execute("""
-            SELECT s.id, s.symbol, s.data, s.created_at,
-                   r.id as result_id, r.price_at_signal,
-                   r.price_1h, r.price_4h, r.price_24h, r.price_7d, r.price_30d,
-                   r.result_1h, r.result_4h, r.result_24h, r.result_7d, r.result_30d
-            FROM signals s
-            LEFT JOIN signal_results r ON r.signal_id = s.id
-            WHERE s.created_at > NOW() - INTERVAL '31 days'
-            ORDER BY s.created_at DESC
-            LIMIT 200
-        """)
-        rows = cur.fetchall()
-
-        for row in rows:
-            sig_id = row[0]
-            symbol = row[1]
-            data = row[2]
-            created_at = row[3]
-            result_id = row[4]
-            price_at_signal = row[5]
-            price_1h = row[6]
-            price_4h = row[7]
-            price_24h = row[8]
-            price_7d = row[9]
-            price_30d = row[10]
-            result_1h = row[11]
-            result_4h = row[12]
-            result_24h = row[13]
-            result_7d = row[14]
-            result_30d = row[15]
-
-            if isinstance(data, str):
-                data = json.loads(data)
-
-            action = data.get("action", "HOLD")
-            signal_price = float(data.get("price", 0))
-
-            if not created_at.tzinfo:
-                created_at = created_at.replace(tzinfo=datetime.timezone.utc)
-
-            age = now - created_at
-            age_hours = age.total_seconds() / 3600
-
-            # Create result record if not exists
-            if not result_id:
-                cur.execute("""
-                    INSERT INTO signal_results
-                    (signal_id, symbol, action, price_at_signal)
-                    VALUES (%s, %s, %s, %s)
-                    RETURNING id
-                """, [sig_id, symbol, action, signal_price])
-                result_id = cur.fetchone()[0]
-                conn.commit()
-
-            current_price = get_current_price(symbol)
-
-            updates = {}
-
-            if age_hours >= 1 and not price_1h:
-                updates["price_1h"] = current_price
-                updates["result_1h"] = check_signal_result(action, signal_price, current_price)
-
-            if age_hours >= 4 and not price_4h:
-                updates["price_4h"] = current_price
-                updates["result_4h"] = check_signal_result(action, signal_price, current_price)
-
-            if age_hours >= 24 and not price_24h:
-                updates["price_24h"] = current_price
-                updates["result_24h"] = check_signal_result(action, signal_price, current_price)
-
-            if age_hours >= 168 and not price_7d:
-                updates["price_7d"] = current_price
-                updates["result_7d"] = check_signal_result(action, signal_price, current_price)
-
-            if age_hours >= 720 and not price_30d:
-                updates["price_30d"] = current_price
-                updates["result_30d"] = check_signal_result(action, signal_price, current_price)
-
-            if updates:
-                set_parts = ", ".join(k + " = %s" for k in updates.keys())
-                set_parts += ", updated_at = NOW()"
-                vals = list(updates.values()) + [result_id]
-                cur.execute(
-                    "UPDATE signal_results SET " + set_parts + " WHERE id = %s",
-                    vals
-                )
-                conn.commit()
-                print("Updated results for " + symbol + " signal #" + str(sig_id))
-
-        cur.close()
-        conn.close()
-    except Exception as e:
-        print("update_signal_results error: " + str(e))
+    raise Exception("All sources failed for " + symbol + " " + timeframe + ": " + str(errors))
 
 
 def fetch_news(coin):
@@ -1425,6 +1255,165 @@ def wait_until_next_hour():
     time.sleep(wait)
 
 
+
+# Price monitor state
+_price_history = {}   # {coin: [(timestamp, price), ...]}
+_last_emergency = {}  # {coin: timestamp} — throttle emergency signals
+_emergency_lock = threading.Lock()
+
+# Hyperliquid coin → symbol map
+HL_COINS = {
+    "BTC": "BTC", "ETH": "ETH", "SOL": "SOL",
+    "AVAX": "AVAX", "LINK": "LINK", "DOGE": "DOGE", "XRP": "XRP"
+}
+
+
+def get_price_change_pct(coin, minutes=15):
+    """Check % price change over last N minutes from history."""
+    history = _price_history.get(coin, [])
+    if len(history) < 2:
+        return 0
+    now = time.time()
+    cutoff = now - (minutes * 60)
+    old_prices = [p for t, p in history if t <= cutoff]
+    if not old_prices:
+        return 0
+    old_price = old_prices[-1]
+    current_price = history[-1][1]
+    if old_price <= 0:
+        return 0
+    return (current_price - old_price) / old_price * 100
+
+
+# Live price cache from WebSocket
+_live_prices = {}  # {coin: price} — updated in real-time
+
+def on_hl_message(ws, message):
+    """Handle incoming Hyperliquid WebSocket message."""
+    try:
+        data = _json_ws.loads(message)
+        channel = data.get("channel", "")
+
+        if channel == "trades":
+            trades = data.get("data", [])
+            for trade in trades:
+                coin = trade.get("coin", "")
+                if coin not in HL_COINS:
+                    continue
+                price = float(trade.get("px", 0))
+                if not price:
+                    continue
+
+                # Update live price cache
+                _live_prices[coin] = price
+                # Write to shared file for server to read
+                try:
+                    import json as _jw
+                    with open("/tmp/hl_live_prices.json", "w") as _f:
+                        _jw.dump(_live_prices, _f)
+                except:
+                    pass
+
+                now = time.time()
+                if coin not in _price_history:
+                    _price_history[coin] = []
+                _price_history[coin].append((now, price))
+                _price_history[coin] = [(t, p) for t, p in _price_history[coin] if t > now - 1800]
+
+                # Check emergency trigger
+                change_15m = get_price_change_pct(coin, 15)
+                change_5m  = get_price_change_pct(coin, 5)
+                trigger = abs(change_15m) > 3.0 or abs(change_5m) > 2.0
+
+                if trigger:
+                    last_em = _last_emergency.get(coin, 0)
+                    if now - last_em > 1800:
+                        direction = "↑" if change_15m > 0 else "↓"
+                        print("⚡ EMERGENCY: " + coin + " " + direction +
+                              str(round(change_15m, 1)) + "% in 15min")
+                        _last_emergency[coin] = now
+                        sym = coin + "/USDT"
+                        with _emergency_lock:
+                            try:
+                                signal = run_cycle(sym)
+                                vol_pen = volume_confidence_penalty(
+                                    signal.get("tf_1h") or {}, signal.get("tf_4h") or {}
+                                )
+                                if vol_pen < 0 and signal.get("action") != "HOLD":
+                                    signal["confidence"] = round(
+                                        max(0.50, signal.get("confidence", 0.7) + vol_pen), 2
+                                    )
+                                signal["emergency"] = True
+                                signal["trigger"] = direction + str(round(change_15m, 1)) + "% in 15min"
+                                save_signal(sym, signal)
+                                print("⚡ Emergency signal: " + sym + " " +
+                                      signal.get("action") + " " +
+                                      str(round(signal.get("confidence", 0) * 100)) + "%")
+                            except Exception as se:
+                                print("Emergency signal error: " + str(se))
+
+        elif channel == "candle":
+            # Real-time candle update — update live price
+            candle_data = data.get("data", {})
+            coin = candle_data.get("s", "").replace("-PERP", "")
+            close_px = candle_data.get("c")
+            if coin in HL_COINS and close_px:
+                _live_prices[coin] = float(close_px)
+
+    except Exception as e:
+        print("WS message error: " + str(e))
+
+
+def on_hl_open(ws):
+    """Subscribe to trades and 1m candles for all our coins."""
+    print("Hyperliquid WebSocket connected")
+    for coin in HL_COINS:
+        # Subscribe to real-time trades for price monitoring
+        ws.send(_json_ws.dumps({
+            "method": "subscribe",
+            "subscription": {"type": "trades", "coin": coin}
+        }))
+        # Subscribe to 1m candles for technical updates
+        ws.send(_json_ws.dumps({
+            "method": "subscribe",
+            "subscription": {"type": "candle", "coin": coin, "interval": "1m"}
+        }))
+    print("Subscribed trades+candles: " + ", ".join(HL_COINS.keys()))
+
+
+def on_hl_error(ws, error):
+    print("Hyperliquid WS error: " + str(error))
+
+
+def on_hl_close(ws, close_status_code, close_msg):
+    print("Hyperliquid WS closed — will reconnect in 30s")
+
+
+def run_price_monitor():
+    """
+    Background thread — connects to Hyperliquid WebSocket.
+    Receives real-time trades, triggers emergency signals on >3% moves.
+    Auto-reconnects on disconnect.
+    """
+    print("Price monitor thread started (Hyperliquid WebSocket)")
+    time.sleep(15)  # Wait for exchanges to init
+
+    while True:
+        try:
+            ws = websocket.WebSocketApp(
+                "wss://api.hyperliquid.xyz/ws",
+                on_open=on_hl_open,
+                on_message=on_hl_message,
+                on_error=on_hl_error,
+                on_close=on_hl_close,
+            )
+            ws.run_forever(ping_interval=30, ping_timeout=10)
+        except Exception as e:
+            print("Price monitor WS error: " + str(e))
+        print("Reconnecting Hyperliquid WS in 30s...")
+        time.sleep(30)
+
+
 def run_paper_checker():
     """Background thread — checks paper trades every 15 minutes."""
     print("Paper checker thread started (every 15 min)")
@@ -1436,8 +1425,13 @@ def run_paper_checker():
                 continue
             current_prices = {}
             for sym in SYMBOLS:
+                coin = sym.split("/")[0]
                 try:
-                    coin = sym.split("/")[0]
+                    # Use live WebSocket price first
+                    if coin in _live_prices:
+                        current_prices[coin] = _live_prices[coin]
+                        continue
+                    # Fallback: CEX ticker
                     for ex in EXCHANGES:
                         try:
                             ticker = ex.fetch_ticker(sym)
@@ -1468,6 +1462,10 @@ if __name__ == "__main__":
     checker_thread = threading.Thread(target=run_paper_checker, daemon=True)
     checker_thread.start()
 
+    # Start price monitor (every 60s, triggers emergency signals on >3% moves)
+    monitor_thread = threading.Thread(target=run_price_monitor, daemon=True)
+    monitor_thread.start()
+
     cycle = 0
     while True:
         try:
@@ -1481,15 +1479,18 @@ if __name__ == "__main__":
             except Exception as e:
                 print("Results check error: " + str(e))
 
-            # Check open paper trades — fetch live ticker prices
+            # Check open paper trades — use live WebSocket prices first
             try:
                 conn = get_db()
                 current_prices = {}
                 for sym in SYMBOLS:
+                    coin = sym.split("/")[0]
                     try:
-                        coin = sym.split("/")[0]
-                        # Use ticker for real-time price, not OHLCV
-                        ticker = None
+                        # 1. Use live WebSocket price (most accurate)
+                        if coin in _live_prices:
+                            current_prices[coin] = _live_prices[coin]
+                            continue
+                        # 2. Fallback: CEX ticker
                         for ex in EXCHANGES:
                             try:
                                 ticker = ex.fetch_ticker(sym)
@@ -1498,11 +1499,6 @@ if __name__ == "__main__":
                                     break
                             except:
                                 continue
-                        if not current_prices.get(coin):
-                            # Fallback to OHLCV
-                            ohlcv = fetch_ohlcv_with_fallback(sym, "1h", limit=2)
-                            if ohlcv:
-                                current_prices[coin] = ohlcv[-1][4]
                     except Exception as pe:
                         print("Price fetch error " + sym + ": " + str(pe))
                 print("Paper prices: " + str({k: round(v,4) for k,v in current_prices.items()}))
