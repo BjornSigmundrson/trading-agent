@@ -44,6 +44,117 @@ print("Anthropic API key found")
 
 EXCHANGES = None
 
+
+def get_db():
+    """Get database connection."""
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        return None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=5)
+        return conn
+    except Exception as e:
+        print("DB connect error: " + str(e))
+        return None
+
+
+def update_signal_results():
+    """Check old signals and update WIN/LOSS/NEUTRAL results."""
+    conn = get_db()
+    if not conn:
+        return
+    try:
+        cur = conn.cursor()
+        # Get signals that need result updates
+        cur.execute("""
+            SELECT sr.id, sr.signal_id, sr.symbol, sr.action,
+                   sr.price_at_signal, sr.created_at,
+                   sr.result_1h, sr.result_4h, sr.result_24h, sr.result_7d, sr.result_30d
+            FROM signal_results sr
+            WHERE (sr.result_1h IS NULL OR sr.result_4h IS NULL OR
+                   sr.result_24h IS NULL OR sr.result_7d IS NULL)
+            ORDER BY sr.created_at DESC
+            LIMIT 100
+        """)
+        rows = cur.fetchall()
+
+        import datetime as _dt
+        now = _dt.datetime.now(_dt.timezone.utc)
+
+        for row in rows:
+            rid, sig_id, symbol, action, entry_price, created_at, r1h, r4h, r24h, r7d, r30d = row
+            if not entry_price or entry_price <= 0:
+                continue
+
+            # Get current price for this symbol
+            try:
+                current = None
+                for ex in EXCHANGES:
+                    try:
+                        ticker = ex.fetch_ticker(symbol)
+                        if ticker and ticker.get("last"):
+                            current = float(ticker["last"])
+                            break
+                    except:
+                        continue
+                if not current:
+                    continue
+            except:
+                continue
+
+            # Calculate age
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=_dt.timezone.utc)
+            age_hours = (now - created_at).total_seconds() / 3600
+
+            def calc_result(price, entry, act):
+                if not price or price <= 0:
+                    return None
+                pct = (price - entry) / entry * 100
+                if act == "BUY":
+                    if pct > 1: return "WIN"
+                    if pct < -1: return "LOSS"
+                    return "NEUTRAL"
+                elif act == "SELL":
+                    if pct < -1: return "WIN"
+                    if pct > 1: return "LOSS"
+                    return "NEUTRAL"
+                else:  # HOLD
+                    if abs(pct) <= 2: return "WIN"
+                    return "LOSS"
+
+            updates = {}
+            if age_hours >= 1 and r1h is None:
+                updates["result_1h"] = calc_result(current, entry_price, action)
+                updates["price_1h"] = current
+            if age_hours >= 4 and r4h is None:
+                updates["result_4h"] = calc_result(current, entry_price, action)
+                updates["price_4h"] = current
+            if age_hours >= 24 and r24h is None:
+                updates["result_24h"] = calc_result(current, entry_price, action)
+                updates["price_24h"] = current
+            if age_hours >= 168 and r7d is None:
+                updates["result_7d"] = calc_result(current, entry_price, action)
+                updates["price_7d"] = current
+
+            if updates:
+                set_parts = ", ".join(k + "=%s" for k in updates)
+                set_parts += ", updated_at=NOW()"
+                vals = list(updates.values()) + [rid]
+                cur.execute("UPDATE signal_results SET " + set_parts + " WHERE id=%s", vals)
+                print("Updated results for " + symbol + " signal #" + str(sig_id))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print("update_signal_results error: " + str(e))
+        try:
+            conn.close()
+        except:
+            pass
+
+
 def init_exchanges():
     global EXCHANGES
     exs = []
