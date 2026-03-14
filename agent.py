@@ -18,6 +18,20 @@ SYMBOLS = [
     "AVAX/USDT", "LINK/USDT", "DOGE/USDT", "XRP/USDT"
 ]
 
+# Per-coin RSS feeds
+COIN_NEWS_FEEDS = {
+    "btc":  ["https://cointelegraph.com/rss/tag/bitcoin",
+             "https://coindesk.com/arc/outboundfeeds/rss/?category=markets"],
+    "eth":  ["https://cointelegraph.com/rss/tag/ethereum",
+             "https://coindesk.com/arc/outboundfeeds/rss/?category=tech"],
+    "sol":  ["https://cointelegraph.com/rss/tag/solana"],
+    "avax": ["https://cointelegraph.com/rss/tag/avalanche"],
+    "link": ["https://cointelegraph.com/rss/tag/chainlink"],
+    "doge": ["https://cointelegraph.com/rss/tag/dogecoin"],
+    "xrp":  ["https://cointelegraph.com/rss/tag/xrp",
+             "https://coindesk.com/arc/outboundfeeds/rss/?category=markets"],
+}
+
 NEWS_FEEDS = [
     "https://cointelegraph.com/rss",
     "https://coindesk.com/arc/outboundfeeds/rss/",
@@ -311,26 +325,62 @@ def fetch_news(coin):
         "btc": "bitcoin", "eth": "ethereum", "sol": "solana",
         "avax": "avalanche", "link": "chainlink", "doge": "dogecoin", "xrp": "ripple"
     }
-    keywords = [coin_name, name_map.get(coin_name, coin_name)]
+    full_name = name_map.get(coin_name, coin_name)
+    keywords = [coin_name, full_name]
 
-    for feed_url in NEWS_FEEDS:
+    # First try coin-specific feeds
+    specific_feeds = COIN_NEWS_FEEDS.get(coin_name, [])
+    all_feeds = specific_feeds + [f for f in NEWS_FEEDS if f not in specific_feeds]
+
+    seen = set()
+    for feed_url in all_feeds:
         try:
             req = urllib.request.Request(feed_url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=8) as resp:
-                content = resp.read()
-            root = ET.fromstring(content)
+                raw = resp.read()
+            root = ET.fromstring(raw)
             for item in root.iter("item"):
                 title_el = item.find("title")
                 if title_el is not None and title_el.text:
                     title = title_el.text.strip()
-                    if any(kw in title.lower() for kw in keywords + ["crypto", "market", "bitcoin"]):
+                    # For coin-specific feeds include all titles
+                    # For general feeds filter strictly by coin name
+                    if feed_url in specific_feeds:
+                        is_relevant = any(kw in title.lower() for kw in keywords)
+                    else:
+                        is_relevant = any(kw in title.lower() for kw in keywords)
+                    if is_relevant and title not in seen:
+                        seen.add(title)
                         headlines.append(title)
-                if len(headlines) >= 10:
+                if len(headlines) >= 8:
                     break
         except Exception:
             continue
-        if len(headlines) >= 10:
+        if len(headlines) >= 8:
             break
+
+    # If still not enough, add general crypto headlines marked as such
+    if len(headlines) < 3:
+        for feed_url in NEWS_FEEDS:
+            try:
+                req = urllib.request.Request(feed_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    raw = resp.read()
+                root = ET.fromstring(raw)
+                for item in root.iter("item"):
+                    title_el = item.find("title")
+                    if title_el is not None and title_el.text:
+                        title = title_el.text.strip()
+                        if title not in seen:
+                            seen.add(title)
+                            headlines.append("[general] " + title)
+                    if len(headlines) >= 5:
+                        break
+            except Exception:
+                continue
+            if len(headlines) >= 5:
+                break
+
     return headlines[:8]
 
 
@@ -451,92 +501,63 @@ def fetch_liquidations(symbol):
     return result
 
 
-def fetch_whale_alerts(coin):
-    """Fetch on-chain whale data from multiple free sources."""
-    coin_name = coin.split("/")[0].lower()
-    name_map = {
-        "btc": "bitcoin", "eth": "ethereum", "sol": "solana",
-        "avax": "avalanche", "link": "chainlink", "doge": "dogecoin", "xrp": "ripple"
-    }
-    full_name = name_map.get(coin_name, coin_name)
-    alerts = []
-
-    # Source 1: CoinGecko large holder stats (free, no key)
+def fetch_cryptocompare_sentiment(coin_name):
+    """Fetch social sentiment from CryptoCompare — free, no key needed."""
     try:
-        url = "https://api.coingecko.com/api/v3/coins/" + full_name + "?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+        symbol = coin_name.upper()
+        url = "https://min-api.cryptocompare.com/data/social/coin/latest?fsym=" + symbol
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=8) as resp:
             data = json.loads(resp.read().decode())
-        md = data.get("market_data", {})
-        # Large holder proxy: compare volume to market cap
-        vol_24h = md.get("total_volume", {}).get("usd", 0)
-        mcap = md.get("market_cap", {}).get("usd", 1)
-        vol_ratio = round(vol_24h / mcap * 100, 1) if mcap else 0
-        price_change_7d = round(md.get("price_change_percentage_7d", 0), 1)
-        price_change_30d = round(md.get("price_change_percentage_30d", 0), 1)
-        circulating = md.get("circulating_supply", 0)
-        total = md.get("total_supply", 0)
-        supply_pct = round(circulating / total * 100, 1) if total else 0
-
-        if vol_ratio > 15:
-            alerts.append("⚡ Very high volume/mcap ratio: " + str(vol_ratio) + "% — unusual whale activity possible")
-        elif vol_ratio > 8:
-            alerts.append("📊 Elevated volume/mcap: " + str(vol_ratio) + "% — increased market activity")
-
-        alerts.append("📈 Price change: 7d=" + str(price_change_7d) + "% | 30d=" + str(price_change_30d) + "%")
-
-        if supply_pct < 80:
-            alerts.append("🔒 Only " + str(supply_pct) + "% of supply circulating — " + str(round(100-supply_pct, 1)) + "% locked/held")
-
-        print(coin_name.upper() + " CoinGecko: vol/mcap=" + str(vol_ratio) + "% 7d=" + str(price_change_7d) + "%")
+        if data.get("Response") == "Error":
+            return None
+        reddit = data.get("Data", {}).get("Reddit", {})
+        twitter = data.get("Data", {}).get("Twitter", {})
+        result = {}
+        if reddit:
+            result["reddit_posts_24h"] = reddit.get("posts_per_day", 0)
+            result["reddit_comments_24h"] = reddit.get("comments_per_day", 0)
+        if twitter:
+            result["twitter_followers"] = twitter.get("followers", 0)
+            result["twitter_statuses_24h"] = twitter.get("statuses", 0)
+        print(coin_name.upper() + " CryptoCompare: reddit=" + str(result.get("reddit_posts_24h", 0)) + " posts/day")
+        return result
     except Exception as e:
-        print("CoinGecko whale proxy error: " + str(e))
+        print("CryptoCompare error for " + coin_name + ": " + str(e))
+        return None
 
 
-    # Source 2: OKX Funding Rate (works on Railway, no geo-block)
-    coin_okx = coin_name.upper() + "-USDT-SWAP"
+def fetch_market_context():
+    """Fetch S&P500 and Gold from Alpha Vantage — free tier 25 req/day."""
     try:
-        url_okx = "https://www.okx.com/api/v5/public/funding-rate?instId=" + coin_okx
-        req_okx = urllib.request.Request(url_okx, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req_okx, timeout=6) as resp_okx:
-            data_okx = json.loads(resp_okx.read().decode())
-        if data_okx.get("data"):
-            rate = float(data_okx["data"][0]["fundingRate"]) * 100
-            rate_pct = round(rate, 4)
-            if rate_pct > 0.05:
-                alerts.append("📉 Funding rate: +" + str(rate_pct) + "% — лонги переплачивают, рынок перегрет")
-            elif rate_pct < -0.02:
-                alerts.append("📈 Funding rate: " + str(rate_pct) + "% — шорты переплачивают, возможен шорт-сквиз")
-            else:
-                alerts.append("⚖️ Funding rate: " + str(rate_pct) + "% — баланс лонгов и шортов")
-            print(coin_name.upper() + " OKX Funding: " + str(rate_pct) + "%")
+        key = os.getenv("ALPHA_VANTAGE_KEY", "")
+        if not key:
+            return None
+        # S&P500 ETF (SPY) as proxy
+        url = "https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=SPY&apikey=" + key
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode())
+        quote = data.get("Global Quote", {})
+        if not quote:
+            return None
+        spy_price = float(quote.get("05. price", 0))
+        spy_change = float(quote.get("10. change percent", "0%").replace("%", ""))
+        result = {
+            "spy_price": round(spy_price, 2),
+            "spy_change_pct": round(spy_change, 2),
+        }
+        if spy_change > 1.5:
+            result["signal"] = "S&P500 сильно растёт +" + str(spy_change) + "% — риск-аппетит высокий, позитивно для крипто"
+        elif spy_change < -1.5:
+            result["signal"] = "S&P500 падает " + str(spy_change) + "% — risk-off настроение, негативно для крипто"
+        else:
+            result["signal"] = "S&P500 нейтрален " + str(spy_change) + "%"
+        print("Alpha Vantage SPY: " + str(spy_price) + " (" + str(spy_change) + "%)")
+        return result
     except Exception as e:
-        print("OKX funding error: " + str(e))
-
-    # Source 3: OKX Open Interest change
-    try:
-        url_oi = "https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-history?instId=" + coin_okx + "&period=1H&limit=5"
-        req_oi = urllib.request.Request(url_oi, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req_oi, timeout=6) as resp_oi:
-            data_oi = json.loads(resp_oi.read().decode())
-        if data_oi.get("data") and len(data_oi["data"]) >= 2:
-            oi_now = float(data_oi["data"][0][1])
-            oi_prev = float(data_oi["data"][-1][1])
-            oi_change = round((oi_now - oi_prev) / oi_prev * 100, 2) if oi_prev > 0 else 0
-            if oi_change > 5:
-                alerts.append("📊 Open Interest вырос на +" + str(oi_change) + "% — новые деньги входят в рынок")
-            elif oi_change < -5:
-                alerts.append("📊 Open Interest упал на " + str(oi_change) + "% — позиции закрываются, возможен разворот")
-            else:
-                alerts.append("📊 Open Interest: " + ("+" if oi_change > 0 else "") + str(oi_change) + "% — стабильно")
-            print(coin_name.upper() + " OI change: " + str(oi_change) + "%")
-    except Exception as e:
-        print("OKX OI error: " + str(e))
-
-
-    if not alerts:
-        print("Whale/onchain: no data available for " + coin_name)
-    return alerts[:4]
+        print("Alpha Vantage error: " + str(e))
+        return None
 
 
 
@@ -1009,13 +1030,22 @@ def run_cycle(symbol):
     except Exception as e:
         print("Liqs error: " + str(e))
 
-    whales = []
+    # CryptoCompare social sentiment
+    sentiment = None
     try:
-        whales = fetch_whale_alerts(symbol)
-        if whales:
-            print("Whale alerts: " + str(len(whales)))
+        coin_name = symbol.split("/")[0].lower()
+        sentiment = fetch_cryptocompare_sentiment(coin_name)
     except Exception as e:
-        print("Whale error: " + str(e))
+        print("Sentiment error: " + str(e))
+
+    # Alpha Vantage market context (S&P500) — fetch once per cycle shared
+    market_ctx = None
+    try:
+        market_ctx = fetch_market_context()
+    except Exception as e:
+        print("Market context error: " + str(e))
+
+    whales = []  # removed — was too noisy
 
     news_block = ""
     if news:
@@ -1049,11 +1079,22 @@ def run_cycle(symbol):
             liqs_block = "\nLIQUIDATIONS & OPEN INTEREST (Hyperliquid):\n" + "\n".join(parts) + "\n"
 
     whale_block = ""
-    if whales:
-        whale_block = ("\nWHALE ACTIVITY:\n"
-            + "\n".join("- " + w for w in whales) + "\n"
-            + "  Large transfers TO exchange = possible selling pressure\n"
-            + "  Large transfers FROM exchange = possible accumulation\n")
+
+    # CryptoCompare sentiment block
+    sentiment_block = ""
+    if sentiment:
+        parts = []
+        if sentiment.get("reddit_posts_24h"):
+            parts.append("Reddit posts/day: " + str(sentiment["reddit_posts_24h"]))
+        if sentiment.get("twitter_statuses_24h"):
+            parts.append("Twitter activity: " + str(sentiment["twitter_statuses_24h"]))
+        if parts:
+            sentiment_block = "\nSOCIAL SENTIMENT (CryptoCompare):\n  " + " | ".join(parts) + "\n"
+
+    # Alpha Vantage market context block
+    market_ctx_block = ""
+    if market_ctx and market_ctx.get("signal"):
+        market_ctx_block = "\nMARKET CONTEXT (S&P500):\n  " + market_ctx["signal"] + "\n"
 
     # RSI Divergence block
     div_block = ""
@@ -1132,7 +1173,8 @@ def run_cycle(symbol):
         liqs_block,
         div_block,
         vol_sr_block,
-        whale_block,
+        sentiment_block,
+        market_ctx_block,
         news_block,
         "Count the BUY/SELL rules above carefully before deciding.",
         "Reply ONLY with a raw JSON object. NO markdown, NO code fences. Keep reason under 100 words. Just the JSON:",
@@ -1188,7 +1230,9 @@ def run_cycle(symbol):
         "news": news,
         "fear_greed": fear_greed,
         "liquidations": liqs,
-        "whale_alerts": whales,
+        "sentiment": sentiment,
+        "market_context": market_ctx,
+        "whale_alerts": [],
     }
     result.update(decision)
     result["timestamp"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
